@@ -25,6 +25,6 @@
 克隆本仓库并安装依赖库：
 
 ```bash
-git clone [https://github.com/你的用户名/arxiv-daily-paper-push.git](https://github.com/你的用户名/arxiv-daily-paper-push.git)
+git clone [https://github.com/fengziclassmate/arxiv-daily-paper-push.git]
 cd arxiv-daily-paper-push
 配置一下缺失的库
