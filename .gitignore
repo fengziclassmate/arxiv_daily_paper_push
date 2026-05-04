@@ -1,0 +1,80 @@
+# =========================
+# Python cache
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Virtual environments
+# =========================
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# =========================
+# PyCharm / JetBrains
+# =========================
+.idea/
+*.iml
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+
+# =========================
+# Secrets / local config
+# =========================
+.env
+.env.*
+*.env
+config.json
+secrets.json
+token.json
+cookies.json
+*.key
+*.pem
+
+# 如果你的真实配置文件在 code/ 下
+code/.env
+code/config.json
+
+# =========================
+# Runtime outputs
+# =========================
+output/
+outputs/
+result/
+results/
+logs/
+*.log
+
+# 你的项目输出目录
+code/output/
+
+# =========================
+# Local database / history
+# =========================
+*.sqlite
+*.sqlite3
+*.db
+
+# 你的本地数据库
+code/storage/papers.sqlite
+
+# 如果 pushed_history 只是本地运行状态，也忽略
+code/pushed_history.txt
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db

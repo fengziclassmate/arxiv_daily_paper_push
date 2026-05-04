@@ -1,0 +1,2 @@
+"""Daily paper digest pipeline."""
+
