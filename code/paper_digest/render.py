@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from html import escape
+from urllib.parse import quote
 
 import markdown
 
@@ -75,8 +76,29 @@ def _wechat_summary(llm_summary: str | None) -> str:
     return text or "摘要暂缺。"
 
 
+def _email_summary(ranked: RankedPaper) -> str:
+    return ranked.email_summary or ranked.llm_summary or ""
+
+
 def _is_bibliographic_alert(ranked: RankedPaper) -> bool:
     return ranked.paper.source == "IJGIS" and not ranked.paper.summary.strip()
+
+
+def _paper_url(ranked: RankedPaper) -> str:
+    paper = ranked.paper
+    if paper.doi:
+        return f"https://doi.org/{quote(paper.doi, safe='/.-()')}"
+    return paper.url
+
+
+def _paragraphs(text: str) -> str:
+    parts = [part.strip() for part in re.split(r"\n{2,}", text.strip()) if part.strip()]
+    if not parts:
+        return "<p>摘要暂缺。</p>"
+    return "".join(
+        f'<p style="margin:0 0 12px;color:#333;font-size:15px;line-height:1.85;text-align:justify;">{escape(part)}</p>'
+        for part in parts
+    )
 
 
 def render_markdown(papers: list[RankedPaper], report_date: datetime) -> str:
@@ -107,7 +129,7 @@ def render_markdown(papers: list[RankedPaper], report_date: datetime) -> str:
                     "",
                     paper.summary or "开放元数据暂未提供英文摘要。",
                     "",
-                    ranked.llm_summary or "",
+                    _email_summary(ranked),
                     "",
                 ]
             )
@@ -140,7 +162,7 @@ def render_wechat_markdown(papers: list[RankedPaper], report_date: datetime) -> 
                 [
                     "**摘要**：",
                     "",
-                    _wechat_summary(ranked.llm_summary),
+                    _wechat_summary(ranked.wechat_summary or ranked.llm_summary),
                     "",
                 ]
             )
@@ -173,9 +195,77 @@ def render_email_html(markdown_content: str, report_date: datetime) -> str:
 """
 
 
-def render_wechat_html(markdown_content: str) -> str:
-    html = markdown.markdown(markdown_content, extensions=["extra"])
-    return f'<section style="font-size:15px;line-height:1.8;color:#222;">{html}</section>'
+def render_wechat_html(papers: list[RankedPaper], report_date: datetime) -> str:
+    directions = _directions(papers)
+    direction_text = " | ".join(directions) if directions else "城市遥感 | GIS | 时空智能"
+
+    html_parts = [
+        '<section style="font-family:\'Times New Roman\', serif;color:#1A1A1A;line-height:1.75;background:#ffffff;">',
+        '<section style="padding:22px 0 18px;border-bottom:3px solid #0044FF;">',
+        '<p style="margin:0 0 8px;color:#0044FF;font-size:13px;letter-spacing:1px;font-weight:bold;">PAPER DIGEST</p>',
+        f'<h1 style="margin:0 0 14px;font-size:28px;line-height:1.25;font-weight:bold;color:#1A1A1A;">城市遥感与 GIS<br>论文速递</h1>',
+        f'<p style="margin:0;color:#666666;font-size:14px;">发布日期：{report_date:%Y-%m-%d}　论文数量：{len(papers)}篇</p>',
+        f'<p style="margin:8px 0 0;color:#666666;font-size:14px;">涵盖方向：{escape(direction_text)}</p>',
+        '</section>',
+        '<section style="margin:22px 0 24px;padding:16px 16px;background:#F7F9FF;border-left:4px solid #0044FF;">',
+        '<p style="margin:0 0 12px;font-size:17px;font-weight:bold;color:#0044FF;">本期论文概览</p>',
+    ]
+
+    for idx, ranked in enumerate(papers, start=1):
+        html_parts.append(
+            '<p style="margin:0 0 8px;color:#333;font-size:14px;line-height:1.7;">'
+            f'<strong style="color:#0044FF;">【{idx}】</strong>{escape(ranked.paper.title)}：{escape(_overview_reason(ranked))}'
+            '</p>'
+        )
+
+    html_parts.extend(
+        [
+            '<p style="margin:14px 0 0;color:#666666;font-size:14px;line-height:1.7;">本期速递为您精选最新发布的城市遥感、GIS 与地理空间智能相关论文，覆盖从基础算法研究到前沿应用方向的多个领域。</p>',
+            '</section>',
+        ]
+    )
+
+    for idx, ranked in enumerate(papers, start=1):
+        paper = ranked.paper
+        url = _paper_url(ranked)
+        html_parts.extend(
+            [
+                '<section style="margin:0 0 28px;padding:0 0 24px;border-bottom:2px solid #0044FF;">',
+                '<section style="margin:0 0 14px;display:block;">',
+                f'<p style="margin:0 0 6px;color:#0044FF;font-size:13px;font-weight:bold;">NO. {idx:02d}</p>',
+                f'<h2 style="margin:0;font-size:20px;line-height:1.45;font-weight:bold;color:#1A1A1A;">{escape(paper.title)}</h2>',
+                '</section>',
+                '<section style="margin:0 0 14px;padding:10px 12px;background:#F8F8F8;color:#666666;font-size:13px;line-height:1.7;">',
+                f'<p style="margin:0;">发布时间：{_paper_date(paper.published_at)}</p>',
+                f'<p style="margin:0;">来源：{escape(paper.venue or paper.source)}</p>',
+                f'<p style="margin:0;">作者：{escape(_authors(paper.authors))}</p>',
+                '</section>',
+            ]
+        )
+
+        if not _is_bibliographic_alert(ranked):
+            html_parts.extend(
+                [
+                    '<p style="margin:0 0 8px;font-size:16px;font-weight:bold;color:#0044FF;">摘要</p>',
+                    _paragraphs(_wechat_summary(ranked.wechat_summary or ranked.llm_summary)),
+                ]
+            )
+        else:
+            html_parts.append(
+                '<p style="margin:0 0 12px;color:#607086;font-size:14px;line-height:1.75;">该条目作为题录提醒收录，开放元数据暂未提供摘要。</p>'
+            )
+
+        if url:
+            safe_url = escape(url, quote=True)
+            html_parts.extend(
+                [
+                    f'<p style="margin:8px 0 0;color:#999999;font-size:12px;line-height:1.5;word-break:break-all;">原文链接：{safe_url}</p>',
+                ]
+            )
+        html_parts.append('</section>')
+
+    html_parts.append('<p style="margin:24px 0 0;text-align:center;color:#999999;font-size:12px;">END</p></section>')
+    return "".join(html_parts)
 
 
 def plain_text_title(report_date: datetime) -> str:

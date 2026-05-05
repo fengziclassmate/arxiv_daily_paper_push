@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from json import JSONDecodeError
@@ -12,6 +14,9 @@ import requests
 from ..models import Paper
 
 CROSSREF_URL = "https://api.crossref.org/journals/{issn}/works"
+CROSSREF_HEADERS = {
+    "User-Agent": "arxiv-daily-paper-push/1.0 (mailto:2537118325@qq.com)",
+}
 ELSEVIER_ARTICLE_URL = "https://api.elsevier.com/content/article/doi/{doi}"
 OPENALEX_WORK_URL = "https://api.openalex.org/works/https://doi.org/{doi}"
 SEMANTIC_SCHOLAR_WORK_URL = "https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
@@ -200,6 +205,98 @@ def _supplement_abstract_for_journal(short_name: str | None, doi: str | None, ur
     return ""
 
 
+def supplement_missing_abstracts(papers: list[Paper]) -> None:
+    for paper in papers:
+        if paper.summary.strip():
+            continue
+        paper.summary = _supplement_abstract_for_journal(paper.source, paper.doi, paper.url)
+
+
+def _fetch_crossref_items(issn: str, params: dict[str, str | int], short_name: str) -> list[dict[str, Any]]:
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                CROSSREF_URL.format(issn=issn),
+                headers=CROSSREF_HEADERS,
+                params=params,
+                timeout=20,
+            )
+            if response.status_code == 429 and attempt < 2:
+                wait_seconds = 5 * (attempt + 1)
+                print(f"[WARN] Crossref source {short_name} rate limited; retrying in {wait_seconds}s.")
+                time.sleep(wait_seconds)
+                continue
+            response.raise_for_status()
+            return response.json().get("message", {}).get("items", [])
+        except requests.RequestException as exc:
+            if attempt < 2:
+                wait_seconds = 3 * (attempt + 1)
+                print(f"[WARN] Crossref source {short_name} request failed; retrying in {wait_seconds}s: {exc}")
+                time.sleep(wait_seconds)
+                continue
+            print(f"[WARN] Crossref source {short_name} failed: {exc}")
+            return []
+        except JSONDecodeError as exc:
+            print(f"[WARN] Crossref source {short_name} returned invalid JSON: {exc}")
+            return []
+    return []
+
+
+def _fetch_one_journal(journal: dict, from_day: date, today: date, include_future: bool) -> list[Paper]:
+    if not journal.get("enabled", True):
+        return []
+    issn = journal["issn"]
+    short_name = journal.get("short_name", issn)
+    params = {
+        "filter": f"from-pub-date:{from_day.isoformat()},type:journal-article",
+        "sort": "published",
+        "order": "desc",
+        "rows": 20,
+        "select": "DOI,title,abstract,author,published-print,published-online,published,container-title,URL",
+    }
+    items = _fetch_crossref_items(issn, params, short_name)
+
+    papers: list[Paper] = []
+    for item in items:
+        title = _first(item.get("title")) or ""
+        if not title:
+            continue
+        if _is_non_research_item(title):
+            continue
+        doi = item.get("DOI")
+        published_at = (
+            _date_from_parts(item.get("published-online", {}).get("date-parts"))
+            or _date_from_parts(item.get("published-print", {}).get("date-parts"))
+            or _date_from_parts(item.get("published", {}).get("date-parts"))
+        )
+        if published_at:
+            published_day = published_at.date()
+            if published_day < from_day:
+                continue
+            if not include_future and published_day > today:
+                continue
+        url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
+        summary = _clean_abstract(item.get("abstract"))
+        authors = [
+            " ".join(part for part in [author.get("given"), author.get("family")] if part)
+            for author in item.get("author", [])
+        ]
+        papers.append(
+            Paper(
+                source=journal.get("short_name", issn),
+                paper_id=doi or item.get("URL", title),
+                title=title.strip(),
+                summary=summary,
+                url=url,
+                published_at=published_at,
+                authors=[author for author in authors if author],
+                doi=doi,
+                venue=journal.get("name"),
+            )
+        )
+    return papers
+
+
 def fetch(config: dict) -> list[Paper]:
     source_config = config.get("sources", {})
     journals = source_config.get("journals", [])
@@ -209,63 +306,10 @@ def fetch(config: dict) -> list[Paper]:
     from_day = today - timedelta(days=lookback_days)
     papers: list[Paper] = []
 
-    for journal in journals:
-        if not journal.get("enabled", True):
-            continue
-        issn = journal["issn"]
-        params = {
-            "filter": f"from-pub-date:{from_day.isoformat()},type:journal-article",
-            "sort": "published",
-            "order": "desc",
-            "rows": 20,
-            "select": "DOI,title,abstract,author,published-print,published-online,published,container-title,URL",
-        }
-        try:
-            response = requests.get(CROSSREF_URL.format(issn=issn), params=params, timeout=20)
-            response.raise_for_status()
-            items = response.json().get("message", {}).get("items", [])
-        except requests.RequestException as exc:
-            print(f"[WARN] Crossref source {journal.get('short_name', issn)} failed: {exc}")
-            continue
-
-        for item in items:
-            title = _first(item.get("title")) or ""
-            if not title:
-                continue
-            if _is_non_research_item(title):
-                continue
-            doi = item.get("DOI")
-            published_at = (
-                _date_from_parts(item.get("published-online", {}).get("date-parts"))
-                or _date_from_parts(item.get("published-print", {}).get("date-parts"))
-                or _date_from_parts(item.get("published", {}).get("date-parts"))
-            )
-            if published_at:
-                published_day = published_at.date()
-                if published_day < from_day:
-                    continue
-                if not include_future and published_day > today:
-                    continue
-            url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
-            summary = _clean_abstract(item.get("abstract"))
-            if not summary:
-                summary = _supplement_abstract_for_journal(journal.get("short_name"), doi, url)
-            authors = [
-                " ".join(part for part in [author.get("given"), author.get("family")] if part)
-                for author in item.get("author", [])
-            ]
-            papers.append(
-                Paper(
-                    source=journal.get("short_name", issn),
-                    paper_id=doi or item.get("URL", title),
-                    title=title.strip(),
-                    summary=summary,
-                    url=url,
-                    published_at=published_at,
-                    authors=[author for author in authors if author],
-                    doi=doi,
-                    venue=journal.get("name"),
-                )
-            )
+    workers = max(1, int(config.get("journal_fetch_workers", 6)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_fetch_one_journal, journal, from_day, today, include_future) for journal in journals]
+        for future in as_completed(futures):
+            papers.extend(future.result())
 
     return papers

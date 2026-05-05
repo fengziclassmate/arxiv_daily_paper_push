@@ -33,3 +33,5 @@ class RankedPaper:
     reason: str
     tags: list[str]
     llm_summary: str | None = None
+    email_summary: str | None = None
+    wechat_summary: str | None = None

@@ -42,7 +42,7 @@ def _fit_wechat_title(title: str) -> str:
     return result.rstrip() or "Paper Digest"
 
 
-def publish(config: dict, title: str, html_content: str, digest: str) -> bool:
+def publish(config: dict, title: str, html_content: str, digest: str, source_url: str = "") -> bool:
     wechat_config = config.get("publishers", {}).get("wechat", {})
     if not wechat_config.get("enabled", False):
         return False
@@ -62,12 +62,13 @@ def publish(config: dict, title: str, html_content: str, digest: str) -> bool:
         print("[WARN] WeChat skipped: failed to get access token.")
         return False
 
+    configured_source_url = wechat_config.get("content_source_url", "") or source_url
     article = {
         "title": _fit_wechat_title(title),
         "author": wechat_config.get("author", ""),
         "digest": digest[:120],
         "content": html_content,
-        "content_source_url": wechat_config.get("content_source_url", ""),
+        "content_source_url": configured_source_url,
         "thumb_media_id": thumb_media_id,
         "need_open_comment": 0,
         "only_fans_can_comment": 0,
