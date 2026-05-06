@@ -73,6 +73,24 @@ def _date_from_parts(parts: list[list[int]] | None) -> datetime | None:
     return datetime(year, month, day, tzinfo=timezone.utc)
 
 
+def _date_text_from_parts(parts: list[list[int]] | None) -> str:
+    first = _first(parts)
+    if not first:
+        return ""
+    if len(first) >= 3:
+        return f"{first[0]:04d}-{first[1]:02d}-{first[2]:02d}"
+    if len(first) == 2:
+        return f"{first[0]:04d}-{first[1]:02d}"
+    return f"{first[0]:04d}"
+
+
+def _date_text(item: dict, field: str) -> str:
+    value = item.get(field)
+    if not isinstance(value, dict):
+        return ""
+    return _date_text_from_parts(value.get("date-parts"))
+
+
 def _find_abstract(value: Any) -> str:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -252,7 +270,7 @@ def _fetch_one_journal(journal: dict, from_day: date, today: date, include_futur
         "sort": "published",
         "order": "desc",
         "rows": 20,
-        "select": "DOI,title,abstract,author,published-print,published-online,published,container-title,URL",
+        "select": "DOI,title,abstract,author,published-print,published-online,published,accepted,created,deposited,issued,container-title,URL",
     }
     items = _fetch_crossref_items(issn, params, short_name)
 
@@ -292,6 +310,15 @@ def _fetch_one_journal(journal: dict, from_day: date, today: date, include_futur
                 authors=[author for author in authors if author],
                 doi=doi,
                 venue=journal.get("name"),
+                metadata={
+                    "published_online": _date_text(item, "published-online"),
+                    "published_print": _date_text(item, "published-print"),
+                    "published": _date_text(item, "published"),
+                    "accepted": _date_text(item, "accepted"),
+                    "created": _date_text(item, "created"),
+                    "deposited": _date_text(item, "deposited"),
+                    "issued": _date_text(item, "issued"),
+                },
             )
         )
     return papers

@@ -12,8 +12,30 @@ from .models import RankedPaper
 
 def _paper_date(paper_date: datetime | None) -> str:
     if paper_date is None:
-        return "Unknown"
+        return ""
     return paper_date.strftime("%Y-%m-%d")
+
+
+def _paper_date_items(ranked: RankedPaper) -> list[tuple[str, str]]:
+    paper = ranked.paper
+    metadata = paper.metadata or {}
+    date_keys = {"published_online", "published_print", "published", "accepted", "issued"}
+    if any(metadata.get(key) for key in date_keys):
+        items: list[tuple[str, str]] = []
+        published_online = metadata.get("published_online")
+        published_print = metadata.get("published_print") or metadata.get("issued")
+        accepted = metadata.get("accepted")
+        if published_online:
+            items.append(("在线发布时间", published_online))
+        elif metadata.get("published") and not published_print:
+            items.append(("发布时间", metadata["published"]))
+        if published_print:
+            items.append(("期刊卷期时间", published_print))
+        if accepted:
+            items.append(("接收时间", accepted))
+        return items
+    published_at = _paper_date(paper.published_at)
+    return [("发布时间", published_at)] if published_at else []
 
 
 def _authors(authors: list[str]) -> str:
@@ -114,7 +136,7 @@ def render_markdown(papers: list[RankedPaper], report_date: datetime) -> str:
             [
                 f"## 【{idx}】{paper.title}",
                 "",
-                f"- 发布时间：{_paper_date(paper.published_at)}",
+                *[f"- {label}：{value}" for label, value in _paper_date_items(ranked)],
                 f"- 来源：{paper.venue or paper.source}",
                 f"- 作者：{_authors(paper.authors)}",
                 f"- 链接：[原文]({paper.url})" + (f" | [代码]({paper.code_url})" if paper.code_url else ""),
@@ -150,7 +172,7 @@ def render_wechat_markdown(papers: list[RankedPaper], report_date: datetime) -> 
             [
                 f"## 【{idx}】{paper.title}",
                 "",
-                f"- 发布时间：{_paper_date(paper.published_at)}",
+                *[f"- {label}：{value}" for label, value in _paper_date_items(ranked)],
                 f"- 来源：{paper.venue or paper.source}",
                 f"- 作者：{_authors(paper.authors)}",
                 f"- 链接：[原文]({paper.url})" + (f" | [代码]({paper.code_url})" if paper.code_url else ""),
@@ -236,7 +258,10 @@ def render_wechat_html(papers: list[RankedPaper], report_date: datetime) -> str:
                 f'<h2 style="margin:0;font-size:20px;line-height:1.45;font-weight:bold;color:#1A1A1A;">{escape(paper.title)}</h2>',
                 '</section>',
                 '<section style="margin:0 0 14px;padding:10px 12px;background:#F8F8F8;color:#666666;font-size:13px;line-height:1.7;">',
-                f'<p style="margin:0;">发布时间：{_paper_date(paper.published_at)}</p>',
+                "".join(
+                    f'<p style="margin:0;">{escape(label)}：{escape(value)}</p>'
+                    for label, value in _paper_date_items(ranked)
+                ),
                 f'<p style="margin:0;">来源：{escape(paper.venue or paper.source)}</p>',
                 f'<p style="margin:0;">作者：{escape(_authors(paper.authors))}</p>',
                 '</section>',

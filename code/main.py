@@ -145,16 +145,20 @@ def main() -> int:
             print("[INFO] dry run enabled: skipped publishing and history update.")
             return 0
 
-        publish_results = [
-            try_publish("QQ mail", qq_mail.publish, config, title, html_content),
-            try_publish("Feishu", feishu.publish, config, title, md_content),
-            try_publish("WeChat", wechat_official.publish, config, wx_title, wechat_html, wechat_digest(selected), first_source_url(selected)),
-        ]
-        if any(publish_results) and not args.ignore_history:
+        qq_success = try_publish("QQ mail", qq_mail.publish, config, title, html_content)
+        feishu_success = try_publish("Feishu", feishu.publish, config, title, md_content)
+        wechat_success = try_publish("WeChat", wechat_official.publish, config, wx_title, wechat_html, wechat_digest(selected), first_source_url(selected))
+        any_success = qq_success or feishu_success or wechat_success
+        wechat_enabled = bool(config.get("publishers", {}).get("wechat", {}).get("enabled", False))
+        should_mark_history = wechat_success if wechat_enabled else any_success
+
+        if should_mark_history and not args.ignore_history:
             for item in selected:
                 store.mark_pushed(item.paper, item.score)
-        elif any(publish_results):
+        elif should_mark_history:
             print("[INFO] history update skipped because --ignore-history is enabled.")
+        elif any_success and wechat_enabled:
+            print("[WARN] WeChat did not succeed; skipped history update so the same papers can be retried.")
         else:
             print("[WARN] no publisher succeeded; skipped history update.")
         return 0
