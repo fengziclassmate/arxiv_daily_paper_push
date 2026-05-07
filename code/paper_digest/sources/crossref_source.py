@@ -10,6 +10,7 @@ from json import JSONDecodeError
 from typing import Any
 
 import requests
+from bs4 import BeautifulSoup
 
 from ..models import Paper
 
@@ -122,6 +123,37 @@ def _abstract_from_openalex_index(index: dict[str, list[int]] | None) -> str:
 
 
 def _extract_taylor_abstract_from_html(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for selector in (
+        ".hlFld-Abstract",
+        ".NLM_abstract",
+        ".abstractSection",
+        "section.abstract",
+        "div.abstract",
+        "#abstract",
+        '[data-test*="abstract"]',
+        '[class*="Abstract"]',
+    ):
+        node = soup.select_one(selector)
+        if not node:
+            continue
+        text = " ".join(node.get_text(" ", strip=True).split())
+        text = re.sub(r"^Abstract\s*", "", text, flags=re.IGNORECASE)
+        if text and not text.lower().startswith("keywords:"):
+            return text
+
+    for selector in (
+        'meta[name="citation_abstract"]',
+        'meta[name="dc.Description"]',
+        'meta[name="DC.Description"]',
+        'meta[name="description"]',
+    ):
+        meta = soup.select_one(selector)
+        if meta:
+            cleaned = _clean_abstract(meta.get("content"))
+            if cleaned:
+                return cleaned
+
     patterns = (
         r'<meta[^>]+name=["\']citation_abstract["\'][^>]+content=["\']([^"\']+)',
         r'<meta[^>]+name=["\']dc\.Description["\'][^>]+content=["\']([^"\']+)',
@@ -134,8 +166,79 @@ def _extract_taylor_abstract_from_html(html: str) -> str:
         match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
         if match:
             cleaned = _clean_abstract(match.group(1))
-            if cleaned:
+            if cleaned and not cleaned.lower().startswith("keywords:"):
                 return cleaned
+    return ""
+
+
+def _taylor_candidate_urls(doi: str | None, url: str | None) -> list[str]:
+    urls: list[str] = []
+    if doi and doi.startswith("10.1080/"):
+        urls.extend(
+            [
+                f"https://www.tandfonline.com/doi/full/{doi}",
+                f"https://www.tandfonline.com/doi/abs/{doi}",
+            ]
+        )
+    if url and ("tandfonline.com" in url or not doi):
+        urls.append(url)
+    deduplicated: list[str] = []
+    for candidate in urls:
+        if candidate and candidate not in deduplicated:
+            deduplicated.append(candidate)
+    return deduplicated
+
+
+def _is_taylor_block_page(status: int | None, html: str) -> bool:
+    if status == 403:
+        return True
+    lower = html.lower()
+    return "quoting the ip address" in lower or "<title>error</title>" in lower and "tandfonline" in lower
+
+
+def _supplement_abstract_from_taylor_scrapling(doi: str | None, url: str | None, config: dict | None = None) -> str:
+    config = config or {}
+    if not config.get("taylor_scrapling_enabled", True):
+        return ""
+    try:
+        from scrapling.fetchers import StealthyFetcher
+    except ImportError:
+        return ""
+
+    timeout = int(config.get("taylor_scrapling_timeout_ms", 60000))
+    wait = int(config.get("taylor_scrapling_wait_ms", 3000))
+    kwargs: dict[str, Any] = {
+        "headless": True,
+        "network_idle": True,
+        "wait": wait,
+        "timeout": timeout,
+        "disable_resources": True,
+        "google_search": False,
+    }
+    if config.get("taylor_scrapling_real_chrome", False):
+        kwargs["real_chrome"] = True
+    proxy = os.getenv("TAYLOR_SCRAPLING_PROXY") or os.getenv("SCRAPLING_PROXY")
+    if proxy:
+        kwargs["proxy"] = proxy
+
+    max_urls = max(1, int(config.get("taylor_scrapling_max_urls", 1)))
+    for candidate_url in _taylor_candidate_urls(doi, url)[:max_urls]:
+        try:
+            page = StealthyFetcher.fetch(candidate_url, **kwargs)
+            status = getattr(page, "status", None)
+            html_content = getattr(page, "html_content", b"")
+            if isinstance(html_content, bytes):
+                html = html_content.decode(getattr(page, "encoding", None) or "utf-8", errors="ignore")
+            else:
+                html = str(html_content)
+            if _is_taylor_block_page(status, html):
+                print(f"[WARN] Taylor & Francis Scrapling blocked for {candidate_url}: HTTP {status}.")
+                continue
+            abstract = _extract_taylor_abstract_from_html(html)
+            if abstract:
+                return abstract
+        except Exception as exc:
+            print(f"[WARN] Taylor & Francis Scrapling supplement failed for {candidate_url}: {exc}")
     return ""
 
 
@@ -188,46 +291,47 @@ def _supplement_abstract_from_semantic_scholar(doi: str | None) -> str:
         return ""
 
 
-def _supplement_abstract_from_taylor_page(url: str | None) -> str:
-    if not url:
-        return ""
-    try:
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-            timeout=25,
-        )
-        if response.status_code == 403:
-            return ""
-        response.raise_for_status()
-        return _extract_taylor_abstract_from_html(response.text)
-    except requests.RequestException as exc:
-        print(f"[WARN] Taylor & Francis page abstract supplement failed for {url}: {exc}")
-        return ""
+def _supplement_abstract_from_taylor_page(doi: str | None, url: str | None, config: dict | None = None) -> str:
+    for candidate_url in _taylor_candidate_urls(doi, url):
+        try:
+            response = requests.get(
+                candidate_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+                timeout=25,
+            )
+            if response.status_code == 403:
+                continue
+            response.raise_for_status()
+            abstract = _extract_taylor_abstract_from_html(response.text)
+            if abstract:
+                return abstract
+        except requests.RequestException as exc:
+            print(f"[WARN] Taylor & Francis page abstract supplement failed for {candidate_url}: {exc}")
+    return _supplement_abstract_from_taylor_scrapling(doi, url, config)
 
 
-def _supplement_abstract_for_journal(short_name: str | None, doi: str | None, url: str | None) -> str:
+def _supplement_abstract_for_journal(short_name: str | None, doi: str | None, url: str | None, config: dict | None = None) -> str:
     if short_name in ELSEVIER_JOURNAL_SHORT_NAMES:
         return _supplement_abstract_from_elsevier(doi)
     if short_name == "IJGIS":
         for supplement in (
             _supplement_abstract_from_openalex(doi),
             _supplement_abstract_from_semantic_scholar(doi),
-            _supplement_abstract_from_taylor_page(url),
+            _supplement_abstract_from_taylor_page(doi, url, config),
         ):
             if supplement:
                 return supplement
     return ""
 
 
-def supplement_missing_abstracts(papers: list[Paper]) -> None:
+def supplement_missing_abstracts(papers: list[Paper], config: dict | None = None) -> None:
     for paper in papers:
         if paper.summary.strip():
             continue
-        paper.summary = _supplement_abstract_for_journal(paper.source, paper.doi, paper.url)
+        paper.summary = _supplement_abstract_for_journal(paper.source, paper.doi, paper.url, config)
 
 
 def _fetch_crossref_items(issn: str, params: dict[str, str | int], short_name: str) -> list[dict[str, Any]]:

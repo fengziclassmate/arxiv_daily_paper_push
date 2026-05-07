@@ -11,12 +11,18 @@ FREEPUBLISH_URL = "https://api.weixin.qq.com/cgi-bin/freepublish/submit"
 MAX_TITLE_BYTES = 64
 
 
-def _access_token() -> str | None:
+def _wechat_session(wechat_config: dict) -> requests.Session:
+    session = requests.Session()
+    session.trust_env = bool(wechat_config.get("use_system_proxy", False))
+    return session
+
+
+def _access_token(session: requests.Session) -> str | None:
     app_id = os.getenv("WECHAT_APP_ID")
     app_secret = os.getenv("WECHAT_APP_SECRET")
     if not app_id or not app_secret:
         return None
-    response = requests.get(
+    response = session.get(
         TOKEN_URL,
         params={"grant_type": "client_credential", "appid": app_id, "secret": app_secret},
         timeout=20,
@@ -56,7 +62,8 @@ def publish(config: dict, title: str, html_content: str, digest: str, source_url
         print(f"[WARN] WeChat skipped: missing {', '.join(missing)}. Put them in code/.env or disable publishers.wechat.enabled.")
         return False
 
-    token = _access_token()
+    session = _wechat_session(wechat_config)
+    token = _access_token(session)
     thumb_media_id = os.getenv("WECHAT_THUMB_MEDIA_ID") or wechat_config.get("thumb_media_id")
     if not token:
         print("[WARN] WeChat skipped: failed to get access token.")
@@ -74,7 +81,7 @@ def publish(config: dict, title: str, html_content: str, digest: str, source_url
         "only_fans_can_comment": 0,
     }
     payload = json.dumps({"articles": [article]}, ensure_ascii=False).encode("utf-8")
-    response = requests.post(
+    response = session.post(
         DRAFT_ADD_URL,
         params={"access_token": token},
         data=payload,
@@ -93,7 +100,7 @@ def publish(config: dict, title: str, html_content: str, digest: str, source_url
         return True
 
     publish_payload = json.dumps({"media_id": media_id}, ensure_ascii=False).encode("utf-8")
-    response = requests.post(
+    response = session.post(
         FREEPUBLISH_URL,
         params={"access_token": token},
         data=publish_payload,

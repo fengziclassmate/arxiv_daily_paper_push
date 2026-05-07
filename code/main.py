@@ -126,7 +126,7 @@ def main() -> int:
             print("[INFO] No relevant new papers today. Nothing to publish.")
             return 0
 
-        crossref_source.supplement_missing_abstracts([item.paper for item in selected])
+        crossref_source.supplement_missing_abstracts([item.paper for item in selected], config)
         selected = [summarize(item) for item in selected]
         report_date = datetime.now()
         md_content = render_markdown(selected, report_date)

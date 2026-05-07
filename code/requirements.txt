@@ -1,4 +1,6 @@
 arxiv
+beautifulsoup4
 markdown
 openai
 requests
+scrapling[all]>=0.4.1
